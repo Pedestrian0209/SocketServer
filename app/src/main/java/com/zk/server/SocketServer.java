@@ -1,17 +1,23 @@
 package com.zk.server;
 
+import android.graphics.Bitmap;
+import android.graphics.PixelFormat;
 import android.hardware.display.DisplayManager;
 import android.hardware.display.VirtualDisplay;
 import android.media.Image;
+import android.media.ImageReader;
 import android.media.MediaCodec;
 import android.media.MediaCodecInfo;
 import android.media.MediaFormat;
 import android.media.projection.MediaProjection;
 import android.os.Handler;
+import android.os.Looper;
 import android.os.Message;
 import android.util.Log;
 import android.view.Surface;
 
+import java.io.ByteArrayOutputStream;
+import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -30,7 +36,7 @@ public class SocketServer {
     private static final String TAG = SocketServer.class.getSimpleName();
     private static final String MIME_TYPE = MediaFormat.MIMETYPE_VIDEO_AVC; // H.264 Advanced Video Coding
     private static final int VIDEO_BITRATE = 125000; // 500Kbps
-    private static final int FRAME_RATE = 15; // 30 fps
+    private static final int FRAME_RATE = 30; // 30 fps
     private static final int IFRAME_INTERVAL = 5; // 2 seconds between I-frames
     private static final int TIMEOUT_US = 0;
     private ServerSocket mServerSocket;
@@ -39,6 +45,7 @@ public class SocketServer {
     private OutputStream mOutputStream;
     private MediaProjection mMediaProjection;
     private VirtualDisplay mVirtualDisplay;
+    private ImageReader mImageReader;
     private MediaCodec mEncoder;
     private Surface mSurface;
     private int mWidth = 720;
@@ -69,9 +76,14 @@ public class SocketServer {
                     mPrintWriter = new PrintWriter(mSocket.getOutputStream());
                     InputStream inputStream = mSocket.getInputStream();
                     Log.d(TAG, "beginListen 1");
-                    mVirtualDisplay = mMediaProjection.createVirtualDisplay("remote_control",
+                    mImageReader = ImageReader.newInstance(
+                            mWidth,
+                            mHeight,
+                            PixelFormat.RGBA_8888,// a pixel两节省一些内存 个2个字节 此处RGB_565 必须和下面 buffer处理一致的格式
+                            1);
+                    /*mVirtualDisplay = mMediaProjection.createVirtualDisplay("remote_control",
                             mWidth, mHeight, mDpi, DisplayManager.VIRTUAL_DISPLAY_FLAG_PUBLIC,
-                            mSurface, null, null);
+                            mImageReader.getSurface(), null, null);*/
                     recordVirtualDisplay();
                     Log.d(TAG, "beginListen end");
                     mOutputStream.close();
@@ -112,8 +124,73 @@ public class SocketServer {
         mEncoder.start();
     }
 
-    private void recordVirtualDisplay() {
+    private void recordVirtualDisplay() throws IOException {
         while (!mSocket.isClosed()) {
+            if (true) {
+                mVirtualDisplay = mMediaProjection.createVirtualDisplay("remote_control",
+                        mWidth, mHeight, mDpi, DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
+                        mImageReader.getSurface(), null, null);
+                try {
+                    Thread.sleep(30);
+                } catch (InterruptedException e) {
+                    e.printStackTrace();
+                }
+                /*mHandler.postDelayed(new Runnable() {
+                    @Override
+                    public void run() {*/
+                Image image = mImageReader.acquireLatestImage();
+                Log.d(TAG, "acquireLatestImage image = " + image);
+                if (image != null) {
+                    int width = image.getWidth();
+                    int height = image.getHeight();
+                    final Image.Plane[] planes = image.getPlanes();
+                    final ByteBuffer buffer = planes[0].getBuffer();
+
+                    /*int size = buffer.remaining();
+                    byte[] bytes = new byte[size];
+                    buffer.get(bytes);
+                    mOutputStream.write(size >> 24);
+                    mOutputStream.write(size >> 16);
+                    mOutputStream.write(size >> 8);
+                    mOutputStream.write(size);
+                    mOutputStream.write(bytes);
+                    mOutputStream.flush();*/
+
+
+                    //每个像素的间距
+                    int pixelStride = planes[0].getPixelStride();
+                    //总的间距
+                    int rowStride = planes[0].getRowStride();
+                    int rowPadding = rowStride - pixelStride * width;
+                    Log.d(TAG,"write1");
+                    Bitmap bitmap = Bitmap.createBitmap(width + rowPadding / pixelStride, height,
+                            Bitmap.Config.ARGB_8888);
+                    Log.d(TAG,"write2");
+                    bitmap.copyPixelsFromBuffer(buffer);
+                    Log.d(TAG,"write3");
+                    //bitmap = Bitmap.createBitmap(bitmap, 0, 0, width, height);
+                    if (bitmap != null) {
+                        ByteArrayOutputStream outputStream = new ByteArrayOutputStream();
+                        bitmap.compress(Bitmap.CompressFormat.JPEG, 30, outputStream);
+                        Log.d(TAG,"write");
+                        int size = outputStream.size();
+                        mOutputStream.write(size >> 24);
+                        mOutputStream.write(size >> 16);
+                        mOutputStream.write(size >> 8);
+                        mOutputStream.write(size);
+                        mOutputStream.write(outputStream.toByteArray());
+                        mOutputStream.flush();
+                        bitmap.recycle();
+                    }
+                    image.close();
+                }
+                if (mVirtualDisplay != null) {
+                    mVirtualDisplay.release();
+                }
+                    /*}
+                }, 300);*/
+                continue;
+            }
             int eobIndex = mEncoder.dequeueOutputBuffer(mBufferInfo, TIMEOUT_US);
             switch (eobIndex) {
                 case MediaCodec.INFO_OUTPUT_BUFFERS_CHANGED:
@@ -134,15 +211,16 @@ public class SocketServer {
                      */
                     if (mBufferInfo.flags != MediaCodec.BUFFER_FLAG_CODEC_CONFIG && mBufferInfo.size != 0) {
                         ByteBuffer realData = mEncoder.getOutputBuffers()[eobIndex];
-                        realData.position(mBufferInfo.offset);
+                        /*realData.position(mBufferInfo.offset);
                         realData.limit(mBufferInfo.offset + mBufferInfo.size);
                         Image image = mEncoder.getInputImage(eobIndex);
-                        Image.Plane[] plane = image.getPlanes();
-                        byte[] finalBuff = plane[0].getBuffer().array();
-                        //new byte[mBufferInfo.size];
+                        Image.Plane[] plane = image.getPlanes();*/
+                        byte[] finalBuff = //plane[0].getBuffer().array();
+                                new byte[mBufferInfo.size];
                         //intToBytes(finalBuff, realDataLength);
                         realData.get(finalBuff);
                         onFrame(finalBuff, 0, finalBuff.length, mBufferInfo.flags);
+                        //avcEncoder.offerEncoder(finalBuff);
                         /*if ((finalBuff[3] == 0 && finalBuff[4] == 0 && finalBuff[5] == 1)
                                 || (finalBuff[3] == 0 && finalBuff[4] == 0 && finalBuff[5] == 0 && finalBuff[6] == 1)) {
                             onFrame(finalBuff, 3, finalBuff.length - 3, mBufferInfo.flags);
@@ -203,10 +281,22 @@ public class SocketServer {
         } catch (IOException e) {
             e.printStackTrace();
         }
+        /*avcEncoder = new AvcEncoder();
+        avcEncoder.setOnFrameListener(new AvcEncoder.OnFrameListener() {
+            @Override
+            public void onFrame(byte[] output) {
+                SocketServer.this.onFrame(output, 0, output.length, mBufferInfo.flags);
+            }
+        });*/
     }
 
     private void prepareDecoder() throws IOException {
         MediaFormat format = MediaFormat.createVideoFormat(MIME_TYPE, mWidth, mHeight);
+        format.setInteger(MediaFormat.KEY_COLOR_FORMAT,
+                MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface);
+        format.setInteger(MediaFormat.KEY_BIT_RATE, VIDEO_BITRATE);
+        format.setInteger(MediaFormat.KEY_FRAME_RATE, FRAME_RATE);
+        format.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, IFRAME_INTERVAL);
         Log.d(TAG, "created video format: " + format);
         mDecoder = MediaCodec.createDecoderByType(MIME_TYPE);
         mDecoder.configure(format, mSurfacePre, null, 0);
@@ -218,6 +308,10 @@ public class SocketServer {
 
     public void onFrame(byte[] buf, int offset, int length, int flag) {
         Log.d(TAG, "onFrame length = " + length);
+        /*avcEncoder.offerEncoder(buf);
+        if (true) {
+            return;
+        }*/
         ByteBuffer[] inputBuffers = mDecoder.getInputBuffers();
         int inputBufferIndex = mDecoder.dequeueInputBuffer(TIMEOUT_US);
         if (inputBufferIndex >= 0) {
@@ -235,4 +329,6 @@ public class SocketServer {
             outputBufferIndex = mDecoder.dequeueOutputBuffer(bufferInfo, 0);
         }
     }
+
+    private AvcEncoder avcEncoder;
 }
