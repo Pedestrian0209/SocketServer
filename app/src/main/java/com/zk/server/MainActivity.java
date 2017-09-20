@@ -14,11 +14,11 @@ import android.view.SurfaceView;
 import android.view.View;
 import android.widget.TextView;
 
-public class MainActivity extends AppCompatActivity implements View.OnClickListener, SurfaceHolder.Callback {
+import java.io.DataOutputStream;
+
+public class MainActivity extends AppCompatActivity implements View.OnClickListener {
     private static final String TAG = MainActivity.class.getSimpleName();
     private SocketServer mSocketServer;
-    private SurfaceView mSurfaceView;
-    private Surface mSurface;
     private TextView mTxt;
     private MediaProjectionManager mMediaProjectionManager;
 
@@ -26,8 +26,6 @@ public class MainActivity extends AppCompatActivity implements View.OnClickListe
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
-        mSurfaceView = (SurfaceView) findViewById(R.id.surface_view);
-        mSurfaceView.getHolder().addCallback(this);
         findViewById(R.id.write).setOnClickListener(this);
         mTxt = (TextView) findViewById(R.id.txt);
         mSocketServer = new SocketServer();
@@ -66,21 +64,5 @@ public class MainActivity extends AppCompatActivity implements View.OnClickListe
             return;
         }
         mSocketServer.setMediaProjection(mediaProjection);
-    }
-
-    @Override
-    public void surfaceCreated(SurfaceHolder holder) {
-        mSurface = holder.getSurface();
-        mSocketServer.setSurface(mSurface);
-    }
-
-    @Override
-    public void surfaceChanged(SurfaceHolder holder, int format, int width, int height) {
-
-    }
-
-    @Override
-    public void surfaceDestroyed(SurfaceHolder holder) {
-        mSurface = null;
     }
 }
