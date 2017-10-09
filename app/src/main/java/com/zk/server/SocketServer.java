@@ -1,5 +1,7 @@
 package com.zk.server;
 
+import android.graphics.Bitmap;
+import android.graphics.PixelFormat;
 import android.hardware.display.DisplayManager;
 import android.hardware.display.VirtualDisplay;
 import android.hardware.input.InputManager;
@@ -23,6 +25,7 @@ import android.view.InputEvent;
 import android.view.MotionEvent;
 import android.view.Surface;
 
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -54,13 +57,14 @@ public class SocketServer {
     private PrintWriter mPrintWriter;
     private OutputStream mOutputStream;
     private InputStream mInputStream;
-    private MediaProjection mMediaProjection;
+    private static MediaProjection mMediaProjection;
     private VirtualDisplay mVirtualDisplay;
+    private ImageReader mImageReader;
     private MediaCodec mEncoder;
     private Surface mSurface;
-    private int mWidth = 480;
-    private int mHeight = 854;
-    private int mDpi = 1;
+    private int mWidth = 720;
+    private int mHeight = 1280;
+    private int mDpi = 260;
     public static Handler mHandler;
     private AudioRecord mAudioRecord;
 
@@ -79,6 +83,13 @@ public class SocketServer {
         } catch (ClassNotFoundException e) {
             e.printStackTrace();
         }
+    }
+
+    public void init(int width, int height, int dpi) {
+        mWidth = width;
+        mHeight = height;
+        mDpi = dpi;
+        Log.d(TAG, "init mWidth = " + mWidth + " mHeight = " + mHeight + " mDpi = " + mDpi);
     }
 
     private void init() throws ClassNotFoundException, NoSuchMethodException, InvocationTargetException, IllegalAccessException {
@@ -122,6 +133,7 @@ public class SocketServer {
                     }).start();
                     recordAudio();
                     recordVideo();
+                    //recordVirtualDisplay();
                     Log.d(TAG, "beginListen end");
                     mOutputStream.close();
                     mOutputStream = null;
@@ -144,6 +156,84 @@ public class SocketServer {
             prepareEncoder();
         } catch (IOException e) {
             e.printStackTrace();
+        }
+    }
+
+    private void recordVirtualDisplay() throws IOException {
+        mImageReader = ImageReader.newInstance(
+                mWidth,
+                mHeight,
+                PixelFormat.RGBA_8888,// a pixel两节省一些内存 个2个字节 此处RGB_565 必须和下面 buffer处理一致的格式
+                1);
+        mVirtualDisplay = mMediaProjection.createVirtualDisplay("remote_control",
+                mWidth, mHeight, mDpi, DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
+                mImageReader.getSurface(), null, null);
+        while (!mSocket.isClosed()) {
+            Image image = mImageReader.acquireLatestImage();
+            if (image != null) {
+                Log.d(TAG, "acquireLatestImage image = " + image);
+                int width = image.getWidth();
+                int height = image.getHeight();
+                Image.Plane[] planes = image.getPlanes();
+                ByteBuffer buffer = planes[0].getBuffer();
+                /*int length = buffer.limit() - buffer.position();
+                byte[] bufferArray = new byte[length];
+                buffer.get(bufferArray);*/
+                //每个像素的间距
+                int pixelStride = planes[0].getPixelStride();
+                //总的间距
+                int rowStride = planes[0].getRowStride();
+                int rowPadding = rowStride - pixelStride * width;
+                int bmpWidth = width + rowPadding / pixelStride;
+                Log.d(TAG, "write1 width = " + width + " height = " + height + " pixelStride = " + pixelStride + " rowStride = " + rowStride + " rowPadding = " + rowPadding);
+                Bitmap bitmap = Bitmap.createBitmap(width + rowPadding / pixelStride, height,
+                        Bitmap.Config.ARGB_8888);
+                Log.d(TAG, "write2 width + rowPadding / pixelStride = " + width + rowPadding / pixelStride);
+                bitmap.copyPixelsFromBuffer(buffer);
+                Log.d(TAG, "write3");
+                bitmap = Bitmap.createBitmap(bitmap, 0, 0, width, height);
+                Log.d(TAG, "write4");
+                if (bitmap != null) {
+                    ByteArrayOutputStream outputStream = new ByteArrayOutputStream();
+                    bitmap.compress(Bitmap.CompressFormat.JPEG, 60, outputStream);
+                    Log.d(TAG, "write");
+                    int size = outputStream.size();
+                    mOutputStream.write(size >> 24);
+                    mOutputStream.write(size >> 16);
+                    mOutputStream.write(size >> 8);
+                    mOutputStream.write(size);
+                    mOutputStream.write(outputStream.toByteArray());
+                    mOutputStream.flush();
+                    Log.d(TAG, "write end " + size);
+                    bitmap.recycle();
+                }
+                /*mOutputStream.write(width >> 24);
+                mOutputStream.write(width >> 16);
+                mOutputStream.write(width >> 8);
+                mOutputStream.write(width);
+                mOutputStream.write(height >> 24);
+                mOutputStream.write(height >> 16);
+                mOutputStream.write(height >> 8);
+                mOutputStream.write(height);
+                mOutputStream.write(bmpWidth >> 24);
+                mOutputStream.write(bmpWidth >> 16);
+                mOutputStream.write(bmpWidth >> 8);
+                mOutputStream.write(bmpWidth);
+                mOutputStream.write(length >> 24);
+                mOutputStream.write(length >> 16);
+                mOutputStream.write(length >> 8);
+                mOutputStream.write(length);
+                mOutputStream.write(bufferArray);
+                mOutputStream.flush();
+                Log.d(TAG, "write end");*/
+                image.close();
+            }
+        }
+        if (mVirtualDisplay != null) {
+            mVirtualDisplay.release();
+        }
+        if (mImageReader != null) {
+            mImageReader.close();
         }
     }
 
@@ -259,12 +349,12 @@ public class SocketServer {
     }
 
     private void receiveMsg() {
-        Log.d(TAG, "receiveMsg");
+        //Log.d(TAG, "receiveMsg");
         while (mInputStream != null) {
             byte[] result = new byte[20];
             try {
                 int code = mInputStream.read(result);
-                Log.d(TAG, "receiveMsg code = " + code);
+                //Log.d(TAG, "receiveMsg code = " + code);
                 if (code >= 0) {
                     String msg = new String(result);
                     Log.d(TAG, "receiveMsg msg = " + msg);
@@ -316,5 +406,16 @@ public class SocketServer {
                 }
             }
         }).start();
+    }
+
+    private final int kSampleRate = 44100;
+    private final int kChannelMode = AudioFormat.CHANNEL_IN_STEREO;
+    private final int kEncodeFormat = AudioFormat.ENCODING_PCM_16BIT;
+
+    private void main() {
+        int minBufferSize = AudioRecord.getMinBufferSize(kSampleRate, kChannelMode,
+                kEncodeFormat);
+        AudioRecord mRecord = new AudioRecord(MediaRecorder.AudioSource.REMOTE_SUBMIX,
+                kSampleRate, kChannelMode, kEncodeFormat, minBufferSize * 2);
     }
 }
